@@ -1,0 +1,84 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: "Silver technical customer data"
+
+    columns:
+      - name: customer_id
+        description: "Unique customer identifier"
+        data_tests:
+          - not_null
+          - unique
+
+      - name: first_name
+        data_tests:
+          - not_null
+
+      - name: last_name
+        data_tests:
+          - not_null
+
+      - name: email
+        data_tests:
+          - not_null
+
+      - name: created_at
+        data_tests:
+          - not_null
+
+  - name: stg_accounts
+    description: "Silver technical account data"
+
+    columns:
+      - name: account_id
+        description: "Unique account identifier"
+        data_tests:
+          - not_null
+          - unique
+
+      - name: customer_id
+        data_tests:
+          - not_null
+
+      - name: account_type
+        data_tests:
+          - not_null
+
+      - name: currency
+        data_tests:
+          - not_null
+
+      - name: created_at
+        data_tests:
+          - not_null
+
+  - name: stg_transaction
+    description: "Silver technical transaction data"
+
+    columns:
+      - name: transaction_id
+        description: "Unique transaction identifier"
+        data_tests:
+          - not_null
+          - unique
+
+      - name: account_id
+        data_tests:
+          - not_null
+
+      - name: transaction_type
+        data_tests:
+          - not_null
+
+      - name: amount
+        data_tests:
+          - not_null
+
+      - name: status
+        data_tests:
+          - not_null
+
+      - name: created_at
+        data_tests:
+          - not_null

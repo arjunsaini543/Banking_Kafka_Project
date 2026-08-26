@@ -1,0 +1,657 @@
+import os
+from datetime import timedelta
+
+import boto3
+import pendulum
+import snowflake.connector
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from dotenv import load_dotenv
+
+
+# ============================================================
+# LOAD ENVIRONMENT VARIABLES
+# ============================================================
+
+load_dotenv()
+
+
+# ============================================================
+# MINIO CONFIG
+# ============================================================
+
+MINIO_ENDPOINT = os.getenv(
+    "MINIO_ENDPOINT",
+    "http://minio:9000"
+)
+
+MINIO_ACCESS_KEY = os.getenv(
+    "MINIO_ACCESS_KEY",
+    "minioadmin"
+)
+
+MINIO_SECRET_KEY = os.getenv(
+    "MINIO_SECRET_KEY",
+    "minioadmin123"
+)
+
+BUCKET = os.getenv(
+    "MINIO_BUCKET",
+    "banking-raw"
+)
+
+LOCAL_DIR = os.getenv(
+    "MINIO_LOCAL_DIR",
+    "/tmp/minio_downloads"
+)
+
+
+# ============================================================
+# SNOWFLAKE CONFIG
+# ============================================================
+
+SNOWFLAKE_USER = os.getenv("SNOWFLAKE_USER")
+SNOWFLAKE_PASSWORD = os.getenv("SNOWFLAKE_PASSWORD")
+SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
+SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
+
+SNOWFLAKE_DB = os.getenv(
+    "SNOWFLAKE_DB",
+    "BANKING"
+)
+
+SNOWFLAKE_SCHEMA = os.getenv(
+    "SNOWFLAKE_SCHEMA",
+    "RAW"
+)
+
+
+# ============================================================
+# SNOWFLAKE OBJECTS
+# ============================================================
+
+SNOWFLAKE_STAGE = "BANKING.RAW.BANKING_STAGE"
+
+SNOWFLAKE_TABLES = {
+    "customers": "BANKING.RAW.CUSTOMERS",
+    "accounts": "BANKING.RAW.ACCOUNTS",
+    "transactions": "BANKING.RAW.TRANSACTIONS",
+}
+
+
+# ============================================================
+# MINIO TABLES
+# ============================================================
+
+TABLES = [
+    "customers",
+    "accounts",
+    "transactions",
+]
+
+
+# ============================================================
+# MINIO CLIENT
+# ============================================================
+
+def get_minio_client():
+
+    return boto3.client(
+        "s3",
+        endpoint_url=MINIO_ENDPOINT,
+        aws_access_key_id=MINIO_ACCESS_KEY,
+        aws_secret_access_key=MINIO_SECRET_KEY,
+        region_name="us-east-1",
+    )
+
+
+# ============================================================
+# TASK 1
+# DOWNLOAD FILES FROM MINIO
+# ============================================================
+
+def download_from_minio():
+
+    print("========================================")
+    print("STARTING MINIO DOWNLOAD")
+    print("========================================")
+
+    print(f"MinIO endpoint : {MINIO_ENDPOINT}")
+    print(f"Bucket         : {BUCKET}")
+    print(f"Local directory: {LOCAL_DIR}")
+
+    os.makedirs(
+        LOCAL_DIR,
+        exist_ok=True
+    )
+
+    s3 = get_minio_client()
+
+    # --------------------------------------------------------
+    # TEST MINIO CONNECTION
+    # --------------------------------------------------------
+
+    s3.head_bucket(
+        Bucket=BUCKET
+    )
+
+    print(
+        f"Successfully connected to bucket: {BUCKET}"
+    )
+
+    local_files = {}
+
+    # ========================================================
+    # PROCESS EACH TABLE
+    # ========================================================
+
+    for table in TABLES:
+
+        print("----------------------------------------")
+        print(f"Processing table: {table}")
+        print("----------------------------------------")
+
+        prefix = f"{table}/"
+
+        local_files[table] = []
+
+        paginator = s3.get_paginator(
+            "list_objects_v2"
+        )
+
+        found_files = False
+
+        # ----------------------------------------------------
+        # LIST MINIO FILES
+        # ----------------------------------------------------
+
+        for page in paginator.paginate(
+            Bucket=BUCKET,
+            Prefix=prefix
+        ):
+
+            objects = page.get(
+                "Contents",
+                []
+            )
+
+            for obj in objects:
+
+                key = obj["Key"]
+
+                # Skip folders
+                if key.endswith("/"):
+                    continue
+
+                found_files = True
+
+                filename = os.path.basename(key)
+
+                # ------------------------------------------------
+                # TABLE-SPECIFIC LOCAL DIRECTORY
+                # ------------------------------------------------
+
+                table_dir = os.path.join(
+                    LOCAL_DIR,
+                    table
+                )
+
+                os.makedirs(
+                    table_dir,
+                    exist_ok=True
+                )
+
+                local_file = os.path.join(
+                    table_dir,
+                    filename
+                )
+
+                print(
+                    f"Downloading:\n"
+                    f"  MinIO : {key}\n"
+                    f"  Local : {local_file}"
+                )
+
+                # ------------------------------------------------
+                # DOWNLOAD
+                # ------------------------------------------------
+
+                s3.download_file(
+                    BUCKET,
+                    key,
+                    local_file
+                )
+
+                if not os.path.exists(
+                    local_file
+                ):
+                    raise FileNotFoundError(
+                        f"Download failed: {local_file}"
+                    )
+
+                print(
+                    f"Downloaded successfully: {filename}"
+                )
+
+                local_files[table].append(
+                    local_file
+                )
+
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
+
+        if not found_files:
+
+            print(
+                f"No files found for {table}"
+            )
+
+        else:
+
+            print(
+                f"{table}: "
+                f"{len(local_files[table])} "
+                f"file(s) downloaded"
+            )
+
+    print("========================================")
+    print("MINIO DOWNLOAD COMPLETED")
+    print("========================================")
+
+    print("Files downloaded:")
+    print(local_files)
+
+    return local_files
+
+
+# ============================================================
+# TASK 2
+# LOAD FILES INTO SNOWFLAKE
+# ============================================================
+
+def load_to_snowflake(**kwargs):
+
+    print("========================================")
+    print("STARTING SNOWFLAKE LOAD")
+    print("========================================")
+
+    # --------------------------------------------------------
+    # GET XCOM
+    # --------------------------------------------------------
+
+    ti = kwargs["ti"]
+
+    local_files = ti.xcom_pull(
+        task_ids="download_minio"
+    )
+
+    if not local_files:
+
+        raise ValueError(
+            "No files were downloaded from MinIO."
+        )
+
+    print("Files received from XCom:")
+    print(local_files)
+
+    # ========================================================
+    # VALIDATE ENVIRONMENT VARIABLES
+    # ========================================================
+
+    required_values = {
+
+        "SNOWFLAKE_USER":
+            SNOWFLAKE_USER,
+
+        "SNOWFLAKE_PASSWORD":
+            SNOWFLAKE_PASSWORD,
+
+        "SNOWFLAKE_ACCOUNT":
+            SNOWFLAKE_ACCOUNT,
+
+        "SNOWFLAKE_WAREHOUSE":
+            SNOWFLAKE_WAREHOUSE,
+
+        "SNOWFLAKE_DB":
+            SNOWFLAKE_DB,
+
+        "SNOWFLAKE_SCHEMA":
+            SNOWFLAKE_SCHEMA,
+    }
+
+    missing = [
+        name
+        for name, value in required_values.items()
+        if not value
+    ]
+
+    if missing:
+
+        raise ValueError(
+            "Missing Snowflake environment variables: "
+            + ", ".join(missing)
+        )
+
+    # ========================================================
+    # CONNECT TO SNOWFLAKE
+    # ========================================================
+
+    print("----------------------------------------")
+    print("Connecting to Snowflake")
+    print("----------------------------------------")
+
+    conn = snowflake.connector.connect(
+
+        user=SNOWFLAKE_USER,
+
+        password=SNOWFLAKE_PASSWORD,
+
+        account=SNOWFLAKE_ACCOUNT,
+
+        warehouse=SNOWFLAKE_WAREHOUSE,
+
+        database=SNOWFLAKE_DB,
+
+        schema=SNOWFLAKE_SCHEMA,
+    )
+
+    cur = conn.cursor()
+
+    try:
+
+        # ====================================================
+        # VERIFY DATABASE / SCHEMA
+        # ====================================================
+
+        cur.execute(
+            "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()"
+        )
+
+        current_db_schema = cur.fetchone()
+
+        print(
+            f"Current Snowflake database/schema: "
+            f"{current_db_schema}"
+        )
+
+        # ====================================================
+        # VERIFY STAGE
+        # ====================================================
+
+        print("----------------------------------------")
+        print("Checking Snowflake stage")
+        print("----------------------------------------")
+
+        cur.execute(
+            "SHOW STAGES LIKE 'BANKING_STAGE' "
+            "IN SCHEMA BANKING.RAW"
+        )
+
+        stage_result = cur.fetchall()
+
+        if not stage_result:
+
+            raise RuntimeError(
+                "BANKING.RAW.BANKING_STAGE does not exist. "
+                "Create it in Snowflake before running the DAG."
+            )
+
+        print("Snowflake stage exists.")
+
+        # ====================================================
+        # PROCESS EACH TABLE
+        # ====================================================
+
+        for table, files in local_files.items():
+
+            if not files:
+
+                print(
+                    f"No files for {table}; skipping."
+                )
+
+                continue
+
+            target_table = SNOWFLAKE_TABLES.get(
+                table
+            )
+
+            if not target_table:
+
+                raise ValueError(
+                    f"No Snowflake table mapping for {table}"
+                )
+
+            print()
+            print("========================================")
+            print(f"LOADING TABLE: {target_table}")
+            print("========================================")
+
+            # ------------------------------------------------
+            # TABLE-SPECIFIC STAGE PATH
+            #
+            # customers -> @BANKING_STAGE/customers/
+            # accounts  -> @BANKING_STAGE/accounts/
+            # transactions -> @BANKING_STAGE/transactions/
+            # ------------------------------------------------
+
+            stage_path = f"@{SNOWFLAKE_STAGE}/{table}"
+
+            print(
+                f"Snowflake stage path: {stage_path}"
+            )
+
+            # =================================================
+            # PUT EACH FILE INTO ITS TABLE FOLDER
+            # =================================================
+
+            for file_path in files:
+
+                if not os.path.exists(file_path):
+
+                    raise FileNotFoundError(
+                        f"File does not exist: {file_path}"
+                    )
+
+                # ------------------------------------------------
+                # Convert local path to Snowflake file URI
+                # ------------------------------------------------
+
+                file_uri = (
+                    "file://"
+                    + os.path.abspath(file_path)
+                )
+
+                print("----------------------------------------")
+                print("Uploading file:")
+                print(file_path)
+                print("----------------------------------------")
+
+                # IMPORTANT:
+                # Each table gets its own folder in the stage.
+
+                put_sql = f"""
+PUT '{file_uri}'
+{stage_path}
+AUTO_COMPRESS = FALSE
+OVERWRITE = TRUE
+"""
+
+                print("PUT SQL:")
+                print(put_sql)
+
+                cur.execute(
+                    put_sql
+                )
+
+                put_results = cur.fetchall()
+
+                for row in put_results:
+
+                    print(
+                        "PUT result:",
+                        row
+                    )
+
+            # =================================================
+            # COPY ONLY THIS TABLE'S FILES
+            # =================================================
+
+            print("----------------------------------------")
+            print(
+                f"Copying ONLY {table} files "
+                f"into {target_table}"
+            )
+            print("----------------------------------------")
+
+            copy_sql = f"""
+COPY INTO {target_table}
+FROM {stage_path}
+FILE_FORMAT = (
+    TYPE = PARQUET
+)
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+ON_ERROR = 'ABORT_STATEMENT'
+PURGE = TRUE
+"""
+
+            print("COPY SQL:")
+            print(copy_sql)
+
+            cur.execute(
+                copy_sql
+            )
+
+            copy_results = cur.fetchall()
+
+            print(
+                f"Snowflake COPY result for {table}:"
+            )
+
+            for row in copy_results:
+
+                print(row)
+
+            # =================================================
+            # CHECK NUMBER OF LOADED ROWS
+            # =================================================
+
+            cur.execute(
+                f"SELECT COUNT(*) FROM {target_table}"
+            )
+
+            row_count = cur.fetchone()[0]
+
+            print(
+                f"Rows currently in "
+                f"{target_table}: {row_count}"
+            )
+
+            # =================================================
+            # COMMIT
+            # =================================================
+
+            conn.commit()
+
+            print(
+                f"Finished loading {target_table}"
+            )
+
+    except Exception:
+
+        conn.rollback()
+
+        raise
+
+    finally:
+
+        cur.close()
+
+        conn.close()
+
+    print("========================================")
+    print("SNOWFLAKE LOAD COMPLETED")
+    print("========================================")
+
+
+# ============================================================
+# AIRFLOW DEFAULT ARGUMENTS
+# ============================================================
+
+default_args = {
+
+    "owner": "airflow",
+
+    "retries": 1,
+
+    "retry_delay": timedelta(
+        minutes=1
+    ),
+}
+
+
+# ============================================================
+# AIRFLOW DAG
+# ============================================================
+
+with DAG(
+
+    dag_id="minio_to_snowflake_banking",
+
+    default_args=default_args,
+
+    description=(
+        "Download Banking Parquet files from MinIO "
+        "and load them into Snowflake RAW tables"
+    ),
+
+    schedule="0 2 * * *",
+
+    start_date=pendulum.datetime(
+        2026,
+        8,
+        2,
+        tz="Asia/Kolkata"
+    ),
+
+    catchup=False,
+
+    tags=[
+        "banking",
+        "minio",
+        "snowflake",
+    ],
+
+) as dag:
+
+    # ========================================================
+    # TASK 1
+    # ========================================================
+
+    download_task = PythonOperator(
+
+        task_id="download_minio",
+
+        python_callable=download_from_minio,
+
+    )
+
+    # ========================================================
+    # TASK 2
+    # ========================================================
+
+    snowflake_task = PythonOperator(
+
+        task_id="load_snowflake",
+
+        python_callable=load_to_snowflake,
+
+    )
+
+    # ========================================================
+    # DEPENDENCY
+    # ========================================================
+
+    download_task >> snowflake_task

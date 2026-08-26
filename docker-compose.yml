@@ -1,0 +1,283 @@
+services:
+  # ============================================================
+  # KAFKA - KRaft mode
+  # ============================================================
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+
+    environment:
+      # KRaft
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+
+      # Listeners
+      KAFKA_LISTENERS: >
+        INTERNAL://0.0.0.0:29092,
+        EXTERNAL://0.0.0.0:9092,
+        CONTROLLER://0.0.0.0:29093
+
+      KAFKA_ADVERTISED_LISTENERS: >
+        INTERNAL://kafka:29092,
+        EXTERNAL://localhost:9092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >
+        INTERNAL:PLAINTEXT,
+        EXTERNAL:PLAINTEXT,
+        CONTROLLER:PLAINTEXT
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+
+      # Single broker configuration
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Allow topic creation while learning
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+      # Cluster ID
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+    networks:
+      - banking-mds-net
+
+  # ============================================================
+  # POSTGRESQL - BANKING SOURCE DATABASE
+  # ============================================================
+  postgres:
+    image: postgres:15
+    container_name: banking-postgres
+    restart: always
+
+    environment:
+      POSTGRES_USER: ${POSTGRESQL_USER}
+      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD}
+      POSTGRES_DB: ${POSTGRESQL_DB}
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - ./docker/postgres/data:/var/lib/postgresql/data
+
+    # Required for Debezium CDC
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+
+    networks:
+      - banking-mds-net
+
+  # ============================================================
+  # MINIO - LOCAL S3 STORAGE
+  # ============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: always
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./docker/minio/data:/data
+
+    networks:
+      - banking-mds-net
+
+  # ============================================================
+  # DEBEZIUM KAFKA CONNECT
+  # ============================================================
+  connect:
+    image: debezium/connect:2.7.3.Final
+    container_name: debezium-connect
+    restart: always
+
+    depends_on:
+      - kafka
+      - postgres
+
+    ports:
+      - "8083:8083"
+
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+
+      GROUP_ID: "1"
+
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+
+    networks:
+      - banking-mds-net
+
+  # ============================================================
+  # AIRFLOW METADATA DATABASE
+  # ============================================================
+  airflow-postgres:
+    image: postgres:15
+    container_name: airflow-postgres
+    restart: always
+
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: ${AIRFLOW_DB_NAME}
+
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+
+    ports:
+      - "5433:5432"
+
+    networks:
+      - banking-mds-net
+
+  # ============================================================
+  # AIRFLOW API SERVER / WEB UI
+  # ============================================================
+  airflow-api-server:
+    build:
+      context: .
+      dockerfile: dockerfile-airflow.dockerfile
+
+    container_name: airflow-api-server
+    restart: always
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-postgres:5432/${AIRFLOW_DB_NAME}
+
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+
+    # AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "arjun:arjun2003"
+    # AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+    #docker compose up -d --force-recreate airflow-api-server
+    #docker exec airflow-api-server airflow config list | findstr /I "simple_auth"
+    #you should see :simple_auth_manager_users = arjun:arjun2003
+    #simple_auth_manager_all_admins = True
+    volumes:
+      - ./docker/dags:/opt/airflow/dags
+      - ./docker/logs:/opt/airflow/logs
+      - ./docker/plugins:/opt/airflow/plugins
+      - ./docker/simple_auth_manager_passwords.json:/opt/airflow/simple_auth_manager_passwords.json
+      - "D:/Banking Project/jaffle_shop_2:/opt/airflow/banking_dbt"
+      - "D:/Banking Project/jaffle_shop_2/.dbt:/home/airflow/.dbt"
+
+    ports:
+      - "8080:8080"
+
+    command: api-server
+
+    networks:
+      - banking-mds-net
+
+  # ============================================================
+  # AIRFLOW SCHEDULER
+  # ============================================================
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: dockerfile-airflow.dockerfile
+
+    container_name: airflow-scheduler
+    restart: always
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-postgres:5432/${AIRFLOW_DB_NAME}
+
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+
+    volumes:
+      - ./docker/dags:/opt/airflow/dags
+      - ./docker/logs:/opt/airflow/logs
+      - ./docker/plugins:/opt/airflow/plugins
+      - "D:/Banking Project/jaffle_shop_2:/opt/airflow/banking_dbt"
+      - "D:/Banking Project/jaffle_shop_2/.dbt:/home/airflow/.dbt"
+
+    command: scheduler
+
+    networks:
+      - banking-mds-net
+
+  # ============================================================
+  # AIRFLOW DAG PROCESSOR
+  # ============================================================
+  airflow-dag-processor:
+    build:
+      context: .
+      dockerfile: dockerfile-airflow.dockerfile
+
+    container_name: airflow-dag-processor
+    restart: always
+    env_file:
+      - .env
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-postgres:5432/${AIRFLOW_DB_NAME}
+
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+
+    volumes:
+      - ./docker/dags:/opt/airflow/dags
+      - ./docker/logs:/opt/airflow/logs
+      - ./docker/plugins:/opt/airflow/plugins
+      - "D:/Banking Project/jaffle_shop_2:/opt/airflow/banking_dbt"
+      - "D:/Banking Project/jaffle_shop_2/.dbt:/home/airflow/.dbt"
+
+    command: dag-processor
+
+    networks:
+      - banking-mds-net
+
+# ================================================================
+# VOLUMES
+# ================================================================
+volumes:
+  airflow_postgres_data:
+  kafka_data:
+# ================================================================
+# NETWORK
+# ================================================================
+networks:
+  banking-mds-net:
+    name: banking-mds-net
