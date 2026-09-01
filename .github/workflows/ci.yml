@@ -1,4 +1,3 @@
-```yaml
 name: CI
 
 on:
@@ -84,4 +83,3 @@ jobs:
           dbt debug --profiles-dir ~/.dbt
           dbt deps --profiles-dir ~/.dbt
           dbt compile --profiles-dir ~/.dbt
-```
