@@ -1,6 +1,7 @@
-import requests
 import json
 import time
+
+import requests
 
 CONNECT_URL = "http://localhost:8083/connectors"
 CONNECTOR_NAME = "postgres-connector"

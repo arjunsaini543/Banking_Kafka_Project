@@ -1,6 +1,7 @@
+from datetime import UTC, datetime, timedelta
+
 from airflow import DAG
 from airflow.operators.bash import BashOperator
-from datetime import datetime, timedelta
 
 default_args = {
     "owner": "airflow",
@@ -14,8 +15,7 @@ with DAG(
     default_args=default_args,
     description="Run dbt snapshots for SCD2",
     schedule="0 2 * * *",     
-    start_date=datetime(2026, 8, 25),
-    catchup=False,
+    start_date=datetime(2026, 8, 25, tzinfo=UTC),    catchup=False,
     tags=["dbt", "snapshots"],
 ) as dag:
 

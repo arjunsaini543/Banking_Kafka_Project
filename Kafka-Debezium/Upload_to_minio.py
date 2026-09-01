@@ -1,12 +1,11 @@
-import os
 import json
-from datetime import datetime
+import os
+from datetime import UTC, datetime
 
 import boto3
 import pandas as pd
 from dotenv import load_dotenv
 from kafka import KafkaConsumer
-
 
 # ============================================================
 # LOAD ENVIRONMENT VARIABLES
@@ -134,11 +133,9 @@ def write_to_minio(table_name, record):
     # Convert one record to DataFrame
     df = pd.DataFrame([record])
 
-    date_str = datetime.now().strftime(
-        "%Y-%m-%d"
-    )
+    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
-    timestamp = datetime.now().strftime(
+    timestamp = datetime.now(UTC).strftime(
         "%H%M%S%f"
     )
 
@@ -184,7 +181,7 @@ def write_to_minio(table_name, record):
         )
 
         print(
-            f"✅ Uploaded to MinIO"
+            "✅ Uploaded to MinIO"
         )
 
         print(

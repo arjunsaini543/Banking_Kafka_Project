@@ -4,11 +4,9 @@ from datetime import timedelta
 import boto3
 import pendulum
 import snowflake.connector
-
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from dotenv import load_dotenv
-
 
 # ============================================================
 # LOAD ENVIRONMENT VARIABLES
