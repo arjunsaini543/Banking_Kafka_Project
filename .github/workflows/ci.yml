@@ -6,7 +6,6 @@ on:
     branches:
       - main
       - dev
-
   pull_request:
     branches:
       - main
@@ -18,15 +17,12 @@ jobs:
     services:
       postgres:
         image: postgres:15
-
         env:
           POSTGRES_USER: ${{ secrets.POSTGRESQL_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRESQL_PASSWORD }}
           POSTGRES_DB: ${{ secrets.POSTGRESQL_DB }}
-
         ports:
           - 5432:5432
-
         options: >-
           --health-cmd "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
           --health-interval 10s
@@ -34,71 +30,42 @@ jobs:
           --health-retries 5
 
     steps:
-
-      # -------------------------------------------------------
-      # CHECKOUT
-      # -------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
-      # -------------------------------------------------------
-      # PYTHON
-      # -------------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-
-      # -------------------------------------------------------
-      # INSTALL DEPENDENCIES
-      # -------------------------------------------------------
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
-
           pip install dbt-snowflake
 
-
-      # -------------------------------------------------------
-      # LINT
-      # -------------------------------------------------------
       - name: Run Ruff
         run: |
           pip install ruff
           ruff check .
 
-
-      # -------------------------------------------------------
-      # PYTHON TESTS
-      # -------------------------------------------------------
       - name: Run Pytest
         run: |
           pip install pytest
-
           if [ -d "tests" ]; then
             pytest tests/
           else
             echo "No tests directory found - skipping tests."
           fi
 
-
-      # -------------------------------------------------------
-      # CREATE DBT PROFILE
-      # -------------------------------------------------------
       - name: Setup dbt profile
         run: |
           mkdir -p ~/.dbt
-
-          cat > ~/.dbt/profiles.yml <<EOL
+          cat > ~/.dbt/profiles.yml <<'EOL'
           jaffle_shop_2:
             target: dev
-
             outputs:
               dev:
                 type: snowflake
@@ -111,17 +78,10 @@ jobs:
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           EOL
 
-
-      # -------------------------------------------------------
-      # DBT VALIDATION
-      # -------------------------------------------------------
       - name: Validate dbt project
         run: |
           cd banking_dbt
-
           dbt debug --profiles-dir ~/.dbt
-
           dbt deps --profiles-dir ~/.dbt
-
           dbt compile --profiles-dir ~/.dbt
 ```
