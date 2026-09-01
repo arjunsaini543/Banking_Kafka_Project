@@ -1,3 +1,4 @@
+```yaml
 name: CI
 
 on:
@@ -14,30 +15,14 @@ jobs:
   tests:
     runs-on: ubuntu-latest
 
-    services:
-      postgres:
-        image: postgres:15
-
-        env:
-          POSTGRES_USER: ${{ secrets.POSTGRESQL_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRESQL_PASSWORD }}
-          POSTGRES_DB: ${{ secrets.POSTGRESQL_DB }}
-
-        ports:
-          - 5432:5432
-
-        options: >-
-          --health-cmd "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     steps:
+
       # -----------------------------
       # CHECKOUT
       # -----------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
+
 
       # -----------------------------
       # PYTHON
@@ -46,6 +31,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
 
       # -----------------------------
       # INSTALL DEPENDENCIES
@@ -60,6 +46,7 @@ jobs:
 
           pip install dbt-snowflake
 
+
       # -----------------------------
       # LINT
       # -----------------------------
@@ -67,6 +54,7 @@ jobs:
         run: |
           pip install ruff
           ruff check .
+
 
       # -----------------------------
       # PYTHON TESTS
@@ -81,6 +69,7 @@ jobs:
             echo "No tests directory found - skipping tests."
           fi
 
+
       # -----------------------------
       # DBT PROFILE
       # -----------------------------
@@ -91,7 +80,6 @@ jobs:
           cat > ~/.dbt/profiles.yml <<'EOL'
           jaffle_shop_2:
             target: dev
-
             outputs:
               dev:
                 type: snowflake
@@ -103,6 +91,7 @@ jobs:
                 schema: RAW
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           EOL
+
 
       # -----------------------------
       # DBT VALIDATION
@@ -116,3 +105,4 @@ jobs:
           dbt deps --profiles-dir ~/.dbt
 
           dbt compile --profiles-dir ~/.dbt
+```
