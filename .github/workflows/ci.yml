@@ -3,9 +3,13 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches:
+      - main
+      - dev
+
   pull_request:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   tests:
@@ -14,12 +18,15 @@ jobs:
     services:
       postgres:
         image: postgres:15
+
         env:
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB: Banking
+          POSTGRES_USER: ${{ secrets.POSTGRESQL_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRESQL_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRESQL_DB }}
+
         ports:
           - 5432:5432
+
         options: >-
           --health-cmd "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"
           --health-interval 10s
@@ -68,7 +75,7 @@ jobs:
 
 
       # -------------------------------------------------------
-      # TESTS
+      # PYTHON TESTS
       # -------------------------------------------------------
       - name: Run Pytest
         run: |
@@ -89,22 +96,18 @@ jobs:
           mkdir -p ~/.dbt
 
           cat > ~/.dbt/profiles.yml <<EOL
-          banking_dbt:
+          jaffle_shop_2:
             target: dev
 
             outputs:
               dev:
                 type: snowflake
-
                 account: ${{ secrets.SNOWFLAKE_ACCOUNT }}
                 user: ${{ secrets.SNOWFLAKE_USER }}
                 password: ${{ secrets.SNOWFLAKE_PASSWORD }}
-
                 role: ACCOUNTADMIN
-
                 database: BANKING
                 schema: RAW
-
                 warehouse: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           EOL
 
@@ -116,7 +119,9 @@ jobs:
         run: |
           cd banking_dbt
 
-          dbt deps
+          dbt debug --profiles-dir ~/.dbt
 
-          dbt compile
+          dbt deps --profiles-dir ~/.dbt
+
+          dbt compile --profiles-dir ~/.dbt
 ```
